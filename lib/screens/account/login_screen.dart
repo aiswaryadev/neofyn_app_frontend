@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:my_app/services/session_service.dart';
@@ -14,6 +13,11 @@ import 'register_screen.dart';
 import '../../services/mpin_service.dart';
 import 'set_mpin_screen.dart';
 import 'mpin_verify_screen.dart';
+
+// ── NEW IMPORTS ──────────────────────────────────────────────────────────────
+import '../../repositories/auth_repository.dart';
+import '../../core/network/api_exception.dart';
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  NEOFYN FIN TECH BRAND TOKENS - Clean Professional UI
 // ─────────────────────────────────────────────────────────────────────────────
@@ -111,6 +115,7 @@ class CountryCode {
   final String flag;
   final String code;
   final String name;
+
   const CountryCode(this.flag, this.code, this.name);
 }
 
@@ -156,6 +161,9 @@ class _LoginScreenState extends State<LoginScreen> {
   final _fpNewPassController = TextEditingController();
   final _fpConfirmPassController = TextEditingController();
 
+  // ── NEW: Repository instance ──────────────────────────────────────────────
+  final _authRepo = AuthRepository();
+
   @override
   void initState() {
     super.initState();
@@ -187,11 +195,10 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  LOGIN API
+  //  LOGIN API - UPDATED with Repository
   // ─────────────────────────────────────────────────────────────────────────
 
   Future<void> _login() async {
-    // Validate
     final phoneError = validatePhone(_phoneController.text);
     final passwordError = validatePassword(_passwordController.text);
 
@@ -204,147 +211,134 @@ class _LoginScreenState extends State<LoginScreen> {
     HapticFeedback.mediumImpact();
 
     try {
-      final response = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/api/auth/login'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({
-          'phone': _phoneController.text.trim(),
-          'password': _passwordController.text,
-        }),
+      final response = await _authRepo.login(
+        phone: _phoneController.text.trim(),
+        password: _passwordController.text,
       );
 
-      final data = json.decode(response.body);
-
-      if (response.statusCode == 200) {
-        String? token;
-
-        if (data['token'] != null && data['token'] != 'null') {
-          token = data['token'];
-        } else if (data['data']?['token'] != null &&
-            data['data']['token'] != 'null') {
-          token = data['data']['token'];
-        } else if (data['accessToken'] != null &&
-            data['accessToken'] != 'null') {
-          token = data['accessToken'];
-        }
-
-      if (token != null && token != 'null' && token.isNotEmpty) {
-        await _storage.write(key: 'jwt_token', value: token);
-        final prefs = await SharedPreferences.getInstance();
-
-          String? userId, name, phone;
-          if (data['user'] != null) {
-            userId =
-                data['user']['id']?.toString() ??
-                data['user']['_id']?.toString();
-            name = data['user']['name']?.toString();
-            phone = data['user']['phone']?.toString();
-          } else if (data['data'] is Map) {
-            userId =
-                data['data']['id']?.toString() ??
-                data['data']['_id']?.toString();
-            name = data['data']['name']?.toString();
-            phone = data['data']['phone']?.toString();
-          }
-
-          if (userId != null) {
-            // ✅ Create local non-nullable variables
-            final String finalUserId = userId;
-            final String finalToken = token;
-
-            await SessionService.saveLoginSession(finalToken, finalUserId);
-
-            await prefs.setString('userId', finalUserId);
-            await prefs.setString('name', name ?? '');
-            await prefs.setString(
-              'phone',
-              phone ?? _phoneController.text.trim(),
-            );
-            await prefs.setString('accessToken', finalToken);
-
-            final aeps = Provider.of<AepsProvider>(context, listen: false);
-            aeps.setAuthDetails(
-              token: finalToken,
-              userId: finalUserId,
-              merchantId: '',
-              mobileNo: phone ?? _phoneController.text.trim(),
-            );
-
-            final wallet = Provider.of<WalletProvider>(context, listen: false);
-            wallet.setUserId(finalUserId);
-
-            await _fetchMerchantData(finalToken, finalUserId, phone);
-
-            HapticFeedback.heavyImpact();
-            _showToast('Login successful!');
-
-            if (mounted) {
-              // ✅ Check if MPIN is set
-              final isMpinSet = await MpinService.isMpinSet();
-
-              if (isMpinSet) {
-                // MPIN is already set → Navigate to MPIN Verify Screen
-                Navigator.pushReplacement(
-                  context,
-                  PageRouteBuilder(
-                    pageBuilder: (c, a, _) => MpinVerifyScreen(
-                      userId: finalUserId,
-                      token: finalToken,
-                    ),
-                    transitionsBuilder: (c, a, _, child) => FadeTransition(
-                      opacity: a,
-                      child: SlideTransition(
-                        position:
-                            Tween<Offset>(
-                              begin: const Offset(1.0, 0.0),
-                              end: Offset.zero,
-                            ).animate(
-                              CurvedAnimation(
-                                parent: a,
-                                curve: Curves.easeOutCubic,
-                              ),
-                            ),
-                        child: child,
-                      ),
-                    ),
-                    transitionDuration: const Duration(milliseconds: 500),
-                  ),
-                );
-              } else {
-                // MPIN not set → Navigate to Set MPIN Screen
-                Navigator.pushReplacement(
-                  context,
-                  PageRouteBuilder(
-                    pageBuilder: (c, a, _) =>
-                        SetMpinScreen(userId: finalUserId, token: finalToken),
-                    transitionsBuilder: (c, a, _, child) => FadeTransition(
-                      opacity: a,
-                      child: SlideTransition(
-                        position:
-                            Tween<Offset>(
-                              begin: const Offset(1.0, 0.0),
-                              end: Offset.zero,
-                            ).animate(
-                              CurvedAnimation(
-                                parent: a,
-                                curve: Curves.easeOutCubic,
-                              ),
-                            ),
-                        child: child,
-                      ),
-                    ),
-                    transitionDuration: const Duration(milliseconds: 500),
-                  ),
-                );
-              }
-            }
-          }
-        } else {
-          _showToast(data['message'] ?? 'Login failed', error: true);
-        }
-      } else {
-        _showToast(data['message'] ?? 'Invalid credentials', error: true);
+      if (!response.success) {
+        _showToast(response.message ?? 'Login failed', error: true);
+        setState(() => _isLoading = false);
+        return;
       }
+
+      final data = response.rawData!;
+
+      String? token;
+      if (data['token'] != null && data['token'] != 'null') {
+        token = data['token'];
+      } else if (data['data']?['token'] != null &&
+          data['data']['token'] != 'null') {
+        token = data['data']['token'];
+      } else if (data['accessToken'] != null && data['accessToken'] != 'null') {
+        token = data['accessToken'];
+      }
+
+      if (token == null || token.isEmpty) {
+        _showToast('Login failed - no token received', error: true);
+        setState(() => _isLoading = false);
+        return;
+      }
+
+      await _storage.write(key: 'jwt_token', value: token);
+      final prefs = await SharedPreferences.getInstance();
+
+      String? userId, name, phone;
+      if (data['user'] != null) {
+        userId =
+            data['user']['id']?.toString() ?? data['user']['_id']?.toString();
+        name = data['user']['name']?.toString();
+        phone = data['user']['phone']?.toString();
+      } else if (data['data'] is Map) {
+        userId =
+            data['data']['id']?.toString() ?? data['data']['_id']?.toString();
+        name = data['data']['name']?.toString();
+        phone = data['data']['phone']?.toString();
+      }
+
+      if (userId == null) {
+        _showToast('Invalid user data received', error: true);
+        setState(() => _isLoading = false);
+        return;
+      }
+
+      final String finalUserId = userId;
+      final String finalToken = token;
+
+      await SessionService.saveLoginSession(finalToken, finalUserId);
+
+      await prefs.setString('userId', finalUserId);
+      await prefs.setString('name', name ?? '');
+      await prefs.setString('phone', phone ?? _phoneController.text.trim());
+      await prefs.setString('accessToken', finalToken);
+
+      final aeps = Provider.of<AepsProvider>(context, listen: false);
+      aeps.setAuthDetails(
+        token: finalToken,
+        userId: finalUserId,
+        merchantId: '',
+        mobileNo: phone ?? _phoneController.text.trim(),
+      );
+
+      final wallet = Provider.of<WalletProvider>(context, listen: false);
+      wallet.setUserId(finalUserId);
+
+      await _fetchMerchantData(finalToken, finalUserId, phone);
+
+      HapticFeedback.heavyImpact();
+      _showToast('Login successful!');
+
+      if (mounted) {
+        final isMpinSet = await MpinService.isMpinSet();
+
+        if (isMpinSet) {
+          Navigator.pushReplacement(
+            context,
+            PageRouteBuilder(
+              pageBuilder: (c, a, _) =>
+                  MpinVerifyScreen(userId: finalUserId, token: finalToken),
+              transitionsBuilder: (c, a, _, child) => FadeTransition(
+                opacity: a,
+                child: SlideTransition(
+                  position:
+                      Tween<Offset>(
+                        begin: const Offset(1.0, 0.0),
+                        end: Offset.zero,
+                      ).animate(
+                        CurvedAnimation(parent: a, curve: Curves.easeOutCubic),
+                      ),
+                  child: child,
+                ),
+              ),
+              transitionDuration: const Duration(milliseconds: 500),
+            ),
+          );
+        } else {
+          Navigator.pushReplacement(
+            context,
+            PageRouteBuilder(
+              pageBuilder: (c, a, _) =>
+                  SetMpinScreen(userId: finalUserId, token: finalToken),
+              transitionsBuilder: (c, a, _, child) => FadeTransition(
+                opacity: a,
+                child: SlideTransition(
+                  position:
+                      Tween<Offset>(
+                        begin: const Offset(1.0, 0.0),
+                        end: Offset.zero,
+                      ).animate(
+                        CurvedAnimation(parent: a, curve: Curves.easeOutCubic),
+                      ),
+                  child: child,
+                ),
+              ),
+              transitionDuration: const Duration(milliseconds: 500),
+            ),
+          );
+        }
+      }
+    } on ApiException catch (e) {
+      _showToast(e.userMessage, error: true);
     } catch (e) {
       _showToast('Network error. Please try again.', error: true);
     } finally {
@@ -352,44 +346,40 @@ class _LoginScreenState extends State<LoginScreen> {
     }
   }
 
+  // ── UPDATED: _fetchMerchantData with Repository ───────────────────────────
   Future<void> _fetchMerchantData(
     String token,
     String userId,
     String? phone,
   ) async {
     try {
-      final response = await http.get(
-        Uri.parse(
-          '${ApiConfig.baseUrl}/api/aeps/merchant/by-phone?phone=${_phoneController.text.trim()}',
-        ),
-        headers: {'Content-Type': 'application/json'},
+      final response = await _authRepo.getMerchantByPhone(
+        _phoneController.text.trim(),
       );
 
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        if (data['success'] == true && data['data'] != null) {
-          final aeps = Provider.of<AepsProvider>(context, listen: false);
-          aeps.setMerchantData({
-            'merchantId': data['data']['merchantId'],
-            'merchantRefId': data['data']['merchantRefId'],
-            'phone': data['data']['phone'] ?? phone,
-            'aadhaarNo': data['data']['aadhaarNo'],
-            'firstName': data['data']['firstName'],
-            'lastName': data['data']['lastName'],
-          });
-          aeps.setAuthDetails(
-            token: token,
-            userId: userId,
-            merchantId: data['data']['merchantId'] ?? '',
-            mobileNo: data['data']['phone'] ?? _phoneController.text.trim(),
-          );
-        }
+      if (response.success && response.rawData?['data'] != null) {
+        final merchantData = response.rawData!['data'];
+        final aeps = Provider.of<AepsProvider>(context, listen: false);
+        aeps.setMerchantData({
+          'merchantId': merchantData['merchantId'],
+          'merchantRefId': merchantData['merchantRefId'],
+          'phone': merchantData['phone'] ?? phone,
+          'aadhaarNo': merchantData['aadhaarNo'],
+          'firstName': merchantData['firstName'],
+          'lastName': merchantData['lastName'],
+        });
+        aeps.setAuthDetails(
+          token: token,
+          userId: userId,
+          merchantId: merchantData['merchantId'] ?? '',
+          mobileNo: merchantData['phone'] ?? _phoneController.text.trim(),
+        );
       }
     } catch (_) {}
   }
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  FORGOT PASSWORD API
+  //  FORGOT PASSWORD API - UPDATED with Repository
   // ─────────────────────────────────────────────────────────────────────────
 
   Future<void> _requestPasswordOtp(
@@ -410,17 +400,11 @@ class _LoginScreenState extends State<LoginScreen> {
     setSheetState(() => _isFpLoading = true);
 
     try {
-      final response = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/api/auth/forgot-password'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({'phone': phone}),
-      );
+      final response = await _authRepo.forgotPassword(phone);
 
-      final data = json.decode(response.body);
-
-      if (response.statusCode == 200 && data['success'] == true) {
-        if (data['otp'] != null) {
-          _fpOtpController.text = data['otp'].toString();
+      if (response.success) {
+        if (response.rawData?['otp'] != null) {
+          _fpOtpController.text = response.rawData!['otp'].toString();
         }
         _showToast('OTP sent to $phone');
         setSheetState(() {
@@ -428,15 +412,19 @@ class _LoginScreenState extends State<LoginScreen> {
           _isFpLoading = false;
         });
       } else {
-        _showToast(data['message'] ?? 'Failed to send OTP', error: true);
+        _showToast(response.message ?? 'Failed to send OTP', error: true);
         setSheetState(() => _isFpLoading = false);
       }
+    } on ApiException catch (e) {
+      _showToast(e.userMessage, error: true);
+      setSheetState(() => _isFpLoading = false);
     } catch (e) {
       _showToast('Network error. Please try again.', error: true);
       setSheetState(() => _isFpLoading = false);
     }
   }
 
+  // ── UPDATED: _resetPasswordWithOtp with Repository ────────────────────────
   Future<void> _resetPasswordWithOtp(
     Function(void Function()) setSheetState,
   ) async {
@@ -463,28 +451,31 @@ class _LoginScreenState extends State<LoginScreen> {
     setSheetState(() => _isFpLoading = true);
 
     try {
-      final response = await http.post(
-        Uri.parse('${ApiConfig.baseUrl}/api/auth/reset-password'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({'phone': phone, 'otp': otp, 'newPassword': newPass}),
+      final response = await _authRepo.resetPassword(
+        phone: phone,
+        otp: otp,
+        newPassword: newPass,
       );
 
-      final data = json.decode(response.body);
-
-      if (response.statusCode == 200 &&
-          (data['success'] == true || data['reset'] == true)) {
+      if (response.success) {
         _showToast('Password changed successfully');
         Navigator.pop(context);
         _passwordController.text = newPass;
       } else {
-        _showToast(data['message'] ?? 'Password reset failed', error: true);
+        _showToast(response.message ?? 'Password reset failed', error: true);
       }
+    } on ApiException catch (e) {
+      _showToast(e.userMessage, error: true);
     } catch (e) {
       _showToast('Network error. Please try again.', error: true);
     } finally {
       if (mounted) setSheetState(() => _isFpLoading = false);
     }
   }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  UI HELPERS - UNCHANGED
+  // ─────────────────────────────────────────────────────────────────────────
 
   void _showToast(String msg, {bool error = false}) {
     ScaffoldMessenger.of(context).showSnackBar(
@@ -718,7 +709,7 @@ class _LoginScreenState extends State<LoginScreen> {
       );
 
   // ─────────────────────────────────────────────────────────────────────────
-  //  BUILD UI - Optimized for mobile screen
+  //  BUILD UI - UNCHANGED
   // ─────────────────────────────────────────────────────────────────────────
 
   @override
@@ -740,10 +731,7 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
         child: Stack(
           children: [
-            // Decorative background elements
             _buildBackgroundDecorations(),
-
-            // Main content - Centered without scrolling
             SafeArea(
               child: LayoutBuilder(
                 builder: (context, constraints) {
@@ -759,13 +747,8 @@ class _LoginScreenState extends State<LoginScreen> {
                           child: Column(
                             mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                             children: [
-                              // Logo Section - Compact
                               _buildLogoSection(),
-
-                              // Glass Card with form
                               _buildGlassCard(),
-
-                              // Trust Indicators
                               _buildTrustIndicators(),
                             ],
                           ),
@@ -785,7 +768,6 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget _buildBackgroundDecorations() {
     return Stack(
       children: [
-        // Large circle top right
         Positioned(
           top: -80,
           right: -60,
@@ -805,8 +787,6 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
           ),
         ),
-
-        // Medium circle bottom left
         Positioned(
           bottom: -60,
           left: -40,
@@ -826,8 +806,6 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
           ),
         ),
-
-        // Small circle middle
         Positioned(
           top: MediaQuery.of(context).size.height * 0.4,
           right: -25,
@@ -845,11 +823,7 @@ class _LoginScreenState extends State<LoginScreen> {
             ),
           ),
         ),
-
-        // Grid dots
         Positioned.fill(child: CustomPaint(painter: GridDotPainter())),
-
-        // Curved lines
         Positioned(
           top: 0,
           left: 0,
@@ -866,7 +840,6 @@ class _LoginScreenState extends State<LoginScreen> {
   Widget _buildLogoSection() => Column(
     mainAxisSize: MainAxisSize.min,
     children: [
-      // Logo
       Center(
         child: Image.asset(
           'assets/images/logo_white.png',
@@ -881,7 +854,6 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       ),
       const SizedBox(height: 8),
-      // Tag line
       Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         decoration: BoxDecoration(
@@ -925,7 +897,6 @@ class _LoginScreenState extends State<LoginScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        // Welcome Text
         const Text(
           'Welcome Back',
           style: TextStyle(
@@ -940,16 +911,10 @@ class _LoginScreenState extends State<LoginScreen> {
           style: TextStyle(fontSize: 13, color: Colors.white60),
         ),
         const SizedBox(height: 20),
-
-        // Phone Field
         _buildPhoneField(),
         const SizedBox(height: 14),
-
-        // Password Field
         _buildPasswordField(),
         const SizedBox(height: 8),
-
-        // Forgot Password
         Align(
           alignment: Alignment.centerRight,
           child: TextButton(
@@ -969,8 +934,6 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         ),
         const SizedBox(height: 16),
-
-        // Login Button
         Container(
           width: double.infinity,
           height: 50,
@@ -1016,8 +979,6 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
         ),
         const SizedBox(height: 14),
-
-        // Create Account Link
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
@@ -1077,7 +1038,6 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
         child: Row(
           children: [
-            // Country Code Picker
             GestureDetector(
               onTap: _showCountryPicker,
               child: Container(
@@ -1112,7 +1072,6 @@ class _LoginScreenState extends State<LoginScreen> {
                 ),
               ),
             ),
-            // Phone Input
             Expanded(
               child: TextField(
                 controller: _phoneController,
@@ -1169,7 +1128,7 @@ class _LoginScreenState extends State<LoginScreen> {
             border: InputBorder.none,
             contentPadding: const EdgeInsets.symmetric(
               horizontal: 14,
-              vertical: 13, // Equal padding top and bottom
+              vertical: 13,
             ),
             suffixIcon: Padding(
               padding: const EdgeInsets.only(right: 4),

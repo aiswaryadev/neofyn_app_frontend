@@ -26,7 +26,7 @@ class RechargeService {
     }
 
     final body = jsonDecode(response.body);
-    if (body['success'] != true) {
+     if (body['success'] != true) {
       throw Exception(body['message'] ?? 'Receipt fetch failed');
     }
     return body;
